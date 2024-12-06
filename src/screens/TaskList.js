@@ -1,14 +1,21 @@
 import React,{Component} from "react";
-import { View,Text,ImageBackground,StyleSheet, FlatList,TouchableOpacity,Platform, Alert} from "react-native";
-import TodayImage from "../../assets/imgs/today.jpg"
+import { View,Text,ImageBackground,StyleSheet, FlatList,TouchableOpacity,Platform, Alert, Modal} from "react-native";
 import moment from "moment"
 import 'moment/locale/pt-br'
 import commonStyles from "../commonStyles";
 import Task from "../components/Task";
 import Icon from "react-native-vector-icons/FontAwesome"
 import AddTask from "./addTask";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { server, showError } from "../common";
+import axios from "axios";
+
+//Imagens
+import todayImage from "../../assets/imgs/today.jpg"
+import tomorrowImage from "../../assets/imgs/tomorrow.jpg"
+import weekImage from "../../assets/imgs/week.jpg"
+import monthImage from "../../assets/imgs/month.jpg"
+
 
 const initialState = {
     showDoneTasks: true,
@@ -25,8 +32,23 @@ export default class TaskList extends Component{
 
     componentDidMount = async () =>{
         const stateString = await AsyncStorage.getItem("tasksState")        
-        const state = JSON.parse(stateString) || initialState
-        this.setState(state,this.filterTasks)
+        const savedState = JSON.parse(stateString) || initialState
+        this.setState({
+            showDoneTasks: savedState.showDoneTasks
+        },this.filterTasks)
+        this.loadTasks()
+    }
+
+    loadTasks = async() => {
+        try{
+            const maxDate = moment()
+                .add({days:this.props.daysAhead})
+                .format("YYYY-MM-DD 23:59:59")
+            const res = await axios.get(`${server}/tasks?date=${maxDate}`)
+            this.setState({tasks:res.data},this.filterTasks)
+        }catch(e){
+            showError(e)
+        }
     }
 
     toggleFilter = () =>{
@@ -42,77 +64,112 @@ export default class TaskList extends Component{
             visibleTasks = this.state.tasks.filter(pending)
         }
         this.setState({visibleTasks})
-        AsyncStorage.setItem("tasksState",JSON.stringify(this.state))
+        AsyncStorage.setItem("tasksState",JSON.stringify({
+            showDoneTasks: this.state.showDoneTasks 
+        }))
     }
     
     //Marca a task como concluida ou desmarca
-    toggleTask = taskId => {
-        const tasks = [...this.state.tasks]
-        tasks.forEach(task => {
-            if(task.id === taskId){
-                task.doneAt = task.doneAt ? null : new Date()
-            }
-        })
-
-        this.setState({tasks}, this.filterTasks)
+    toggleTask = async taskId => {
+        try{
+            await axios.put(`${server}/tasks/${taskId}/toggle`)
+            this.loadTasks()
+        }catch(e){
+            showError(e)
+        }
        
     }
 
-    addTask = newTask =>{
+
+    addTask = async newTask =>{
         if(!newTask.desc || !newTask.desc.trim()){
             Alert.alert("Dados invalidos","Descrição não informada")
             return
         }
-        const tasks = [...this.state.tasks]
-        tasks.push({
-            id:Math.random(),
-            desc: newTask.desc,
-            estimateAt: newTask.date,
-            doneAt:null,
-        })
-        this.setState({tasks,showAddTasks:false},this.filterTasks)
+        try{
+            await axios.post(`${server}/tasks/`,{
+                desc: newTask.desc,
+                estimateAt: newTask.date
+            })
+            this.setState({showAddTasks:false},this.loadTasks)
+
+        }catch(e){
+            showError(e)
+        }
     }
 
-    deleteTask = id => {
-        const tasks = this.state.tasks.filter(task => task.id !== id)
-        this.setState({tasks},this.filterTasks)
+    deleteTask = async taskId => {
+        try{
+            await axios.delete(`${server}/tasks/${taskId}/`)
+            this.loadTasks()
+        }catch(e){
+            showError(e)
+        }
+    }
+
+    getImage = () =>{
+        switch(this.props.daysAhead){
+            case 0: return todayImage
+            case 1: return tomorrowImage
+            case 7: return weekImage
+            default: return monthImage
+        }
+    }
+
+    getColor = () =>{
+        switch(this.props.daysAhead){
+            case 0: return commonStyles.colors.today
+            case 1: return  commonStyles.colors.tomorrow
+            case 7: return  commonStyles.colors.week
+            default: return  commonStyles.colors.month
+        }
     }
     
     render(){
         const today = moment().locale("pt-br").format("ddd,D [de] MMMM")
         return(
-            <GestureHandlerRootView>
-                <View style={style.container}>
-                    <AddTask 
-                        isVisible={this.state.showAddTasks}
-                        onCancel={() => this.setState({showAddTasks:false})}
-                        onSave={this.addTask}/>
-                    <ImageBackground source={TodayImage} style={style.background}>
+            <View style={style.container}>
+                    {/* Add Task Pop-Up */}
+                    <View style={{zIndex:1}}>
+                        <AddTask
+                            isVisible={this.state.showAddTasks}
+                            onCancel={() => this.setState({ showAddTasks: false })}
+                            onSave={this.addTask} />
+                    </View>
+                     {/* Tarefa Background */}
+                    <ImageBackground source={this.getImage()} style={style.background}>
                         <View style={style.iconBar}>
+                            {/* Botão Abrir Drawer */}
+                            <TouchableOpacity onPress={() => this.props.navigation.openDrawer()}>
+                                <Icon name={"bars"} size={20} color={commonStyles.colors.secondary}/>
+                            </TouchableOpacity>
+                              {/* Botão Visibilidade */}
                             <TouchableOpacity onPress={this.toggleFilter}>
                                 <Icon name={this.state.showDoneTasks ? "eye" : "eye-slash"} size={20} color={commonStyles.colors.secondary}/>
                             </TouchableOpacity>
                         </View>
                         <View style={style.titleBar}>
-                            <Text style={style.title}>Hoje</Text>
+                            <Text style={style.title}>{this.props.title}</Text>
                             <Text style={style.subtitle}>{today }</Text>
                         </View>
                     </ImageBackground>
-                    <View style={style.taskContainer}>
-                    <FlatList 
-                            data={this.state.visibleTasks} 
-                            keyExtractor={item => `${item.id}`} 
-                            renderItem={({item}) => <Task {...item} onToggleTask={this.toggleTask} onDelete={this.deleteTask}/>} 
-                        />
+                    {/* Lista de Tarefas */}
+                    <View style={style.taskList}>
+                        <FlatList 
+                                data={this.state.visibleTasks} 
+                                keyExtractor={item => `${item.id}`} 
+                                renderItem={({item}) => <Task {...item} 
+                                    onToggleTask={this.toggleTask} 
+                                    onDelete={this.deleteTask}/>}/>
                     </View>
+                    {/* Botão add task */}
                     <TouchableOpacity 
-                        style={style.addButton}
+                        style={[style.addButton,{backgroundColor:this.getColor()}]}
                         activeOpacity={0.7}
                         onPress={() => this.setState({showAddTasks:true})}>
                         <Icon name="plus" size={20} color={commonStyles.colors.secondary}/>
                     </TouchableOpacity>
                 </View>
-            </GestureHandlerRootView>
         )
     }
 }
@@ -124,8 +181,9 @@ const style = StyleSheet.create({
     background:{
         flex:3
     },
-    taskContainer:{
-        flex:7
+    taskList:{
+        flex:7,
+        zIndex:0
     },
     titleBar:{
         flex:1,
@@ -148,7 +206,7 @@ const style = StyleSheet.create({
     iconBar:{
         flexDirection:"row",
         marginHorizontal:20,
-        justifyContent:"flex-end",
+        justifyContent:"space-between",
         marginTop:Platform.OS === "ios" ? 50 : 30
 
     },
@@ -159,7 +217,6 @@ const style = StyleSheet.create({
         width:50,
         height:50,
         borderRadius:25,
-        backgroundColor: commonStyles.colors.today,
         justifyContent:"center",
         alignItems:"center"
     }
